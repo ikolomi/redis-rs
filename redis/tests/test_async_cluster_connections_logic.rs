@@ -3,7 +3,7 @@ mod support;
 
 use futures_util::FutureExt;
 use redis::{
-    cluster_async::testing::{AsyncClusterNode, RefreshConnectionType},
+    cluster_async::testing::{AsyncClusterNode, RefreshConnectionType, BackendState},
     testing::ClusterParams,
     ErrorKind,
 };
@@ -71,6 +71,8 @@ mod test_connect_and_check {
             None,
             RefreshConnectionType::AllConnections,
             None,
+            None,
+            BackendState::default(),
         )
         .await;
         let node = assert_full_success(result);
@@ -105,6 +107,8 @@ mod test_connect_and_check {
             None,
             RefreshConnectionType::AllConnections,
             None,
+            None,
+            BackendState::default(),
         )
         .await;
         let (node, _) = assert_partial_result(result);
@@ -122,6 +126,8 @@ mod test_connect_and_check {
             None,
             RefreshConnectionType::AllConnections,
             None,
+            None,
+            BackendState::default(),
         )
         .await;
         let (node, _) = assert_partial_result(result);
@@ -152,6 +158,8 @@ mod test_connect_and_check {
             None,
             RefreshConnectionType::AllConnections,
             None,
+            None,
+            BackendState::default(),
         )
         .await;
         let (node, _) = assert_partial_result(result);
@@ -181,6 +189,8 @@ mod test_connect_and_check {
             None,
             RefreshConnectionType::AllConnections,
             None,
+            None,
+            BackendState::default(),
         )
         .await;
         let err = result.get_error().unwrap();
@@ -224,6 +234,8 @@ mod test_connect_and_check {
             None,
             RefreshConnectionType::OnlyManagementConnection,
             Some(node),
+            None,
+            BackendState::default(),
         )
         .await;
         let node = assert_full_success(result);
@@ -263,6 +275,8 @@ mod test_connect_and_check {
             None,
             RefreshConnectionType::OnlyManagementConnection,
             Some(node),
+            None,
+            BackendState::default(),
         )
         .await;
         let node = assert_full_success(result);
@@ -305,6 +319,8 @@ mod test_connect_and_check {
             None,
             RefreshConnectionType::OnlyManagementConnection,
             Some(node),
+            None,
+            BackendState::default(),
         )
         .await;
         let (node, _) = assert_partial_result(result);
@@ -357,6 +373,8 @@ mod test_connect_and_check {
             None,
             RefreshConnectionType::OnlyUserConnection,
             Some(node),
+            None,
+            BackendState::default(),
         )
         .await;
         let node = assert_full_success(result);
@@ -411,6 +429,8 @@ mod test_connect_and_check {
             None,
             RefreshConnectionType::OnlyUserConnection,
             Some(node),
+            None,
+            BackendState::default(),
         )
         .await;
         let node = assert_full_success(result);

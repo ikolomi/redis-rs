@@ -95,6 +95,8 @@ ahash = { version = "0.8.6", optional = true }
 
 num-bigint = "0.4.4"
 tracing = "0.1"
+tracing-test = "0.1"
+tracing-subscriber = "0.3"
 futures-time = { version = "3.0.0", optional = true }
 arcstr = "1.1.5"
 ordered-float = "4.1.1"

@@ -73,7 +73,7 @@ fn test_cluster_with_bad_password() {
         },
         false,
     );
-    assert!(cluster.client.get_connection().is_err());
+    assert!(cluster.client.get_connection(None).is_err());
 }
 
 #[test]
@@ -965,7 +965,7 @@ mod mtls_test {
         let cluster = TestClusterContext::new_with_mtls(3, 0);
 
         let client = create_cluster_client_from_cluster(&cluster, true).unwrap();
-        let mut con = client.get_connection().unwrap();
+        let mut con = client.get_connection(None).unwrap();
 
         redis::cmd("SET")
             .arg("{x}key1")
@@ -986,7 +986,7 @@ mod mtls_test {
         let cluster = TestClusterContext::new_with_mtls(3, 0);
 
         let client = create_cluster_client_from_cluster(&cluster, false).unwrap();
-        let connection = client.get_connection();
+        let connection = client.get_connection(None);
 
         match cluster.cluster.servers.first().unwrap().connection_info() {
             ConnectionInfo {

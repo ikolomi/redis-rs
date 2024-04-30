@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::fmt;
 use std::io::{self, Write};
 use std::net::{self, SocketAddr, TcpStream, ToSocketAddrs};
@@ -215,6 +215,24 @@ pub struct ConnectionInfo {
     pub redis: RedisConnectionInfo,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Copy)]
+pub enum PubSubSubscriptionKind {
+    Exact,
+    Pattern,
+    Sharded,
+}
+
+/// Holds the subscription information that redis should use for connecting.
+#[derive(Clone, Debug, Default)]
+pub struct PubSubSubscriptionInfo {
+    pub subscriptions_for_kind: HashMap<PubSubSubscriptionKind, HashSet<Vec<u8>>>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct BackendState {
+    pub pubsub_subscriptions: PubSubSubscriptionInfo,
+}
+
 /// Redis specific/connection independent information used to establish a connection to redis.
 #[derive(Clone, Debug, Default)]
 pub struct RedisConnectionInfo {
@@ -228,6 +246,8 @@ pub struct RedisConnectionInfo {
     pub protocol: ProtocolVersion,
     /// Optionally a pass a client name that should be used for connection
     pub client_name: Option<String>,
+
+    pub backend_state: BackendState,
 }
 
 impl FromStr for ConnectionInfo {
@@ -394,6 +414,7 @@ fn url_to_tcp_connection_info(url: url::Url) -> RedisResult<ConnectionInfo> {
                 _ => ProtocolVersion::RESP2,
             },
             client_name: None,
+            backend_state: Default::default(),
         },
     })
 }
@@ -426,6 +447,7 @@ fn url_to_unix_connection_info(url: url::Url) -> RedisResult<ConnectionInfo> {
                 _ => ProtocolVersion::RESP2,
             },
             client_name: None,
+            backend_state: Default::default(),
         },
     })
 }
@@ -1897,6 +1919,7 @@ mod tests {
                         password: None,
                         protocol: ProtocolVersion::RESP2,
                         client_name: None,
+                        backend_state: Default::default(),
                     },
                 },
             ),

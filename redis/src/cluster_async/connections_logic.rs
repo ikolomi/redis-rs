@@ -6,12 +6,15 @@ use crate::{
     cluster::get_connection_info,
     cluster_client::ClusterParams,
     ErrorKind, RedisError, RedisResult,
+    push_manager::PushInfo,
+    connection::{PubSubSubscriptionInfo, PubSubSubscriptionKind, BackendState},
 };
 
 use futures::prelude::*;
 use futures_time::future::FutureExt;
 use futures_util::{future::BoxFuture, join};
 use tracing::warn;
+use tokio::sync::mpsc;
 
 pub(crate) type ConnectionFuture<C> = futures::future::Shared<BoxFuture<'static, C>>;
 /// Cluster node for async connections
@@ -78,6 +81,8 @@ pub(crate) async fn get_or_create_conn<C>(
     node: Option<AsyncClusterNode<C>>,
     params: &ClusterParams,
     conn_type: RefreshConnectionType,
+    push_sender: Option<mpsc::UnboundedSender<PushInfo>>,
+    backend_state: &BackendState,
 ) -> RedisResult<AsyncClusterNode<C>>
 where
     C: ConnectionLike + Send + Clone + Sync + Connect + 'static,
@@ -91,6 +96,8 @@ where
                     None,
                     RefreshConnectionType::AllConnections,
                     None,
+                    push_sender.clone(),
+                    backend_state.clone(),
                 )
                 .await
                 .get_node();
@@ -98,12 +105,12 @@ where
         };
         match check_node_connections(&node, params, conn_type, addr).await {
             None => Ok(node),
-            Some(conn_type) => connect_and_check(addr, params.clone(), None, conn_type, Some(node))
+            Some(conn_type) => connect_and_check(addr, params.clone(), None, conn_type, Some(node), push_sender.clone(), backend_state.clone())
                 .await
                 .get_node(),
         }
     } else {
-        connect_and_check(addr, params.clone(), None, conn_type, None)
+        connect_and_check(addr, params.clone(), None, conn_type, None, push_sender.clone(), backend_state.clone())
             .await
             .get_node()
     }
@@ -135,13 +142,15 @@ pub(crate) async fn connect_and_check_all_connections<C>(
     addr: &str,
     params: ClusterParams,
     socket_addr: Option<SocketAddr>,
+    push_sender: Option<mpsc::UnboundedSender<PushInfo>>,
+    backend_state: BackendState,
 ) -> ConnectAndCheckResult<C>
 where
     C: ConnectionLike + Connect + Send + Sync + 'static + Clone,
 {
     match future::join(
-        create_connection(addr, params.clone(), socket_addr),
-        create_connection(addr, params.clone(), socket_addr),
+        create_connection(addr, params.clone(), socket_addr, push_sender.clone(), backend_state.clone()),
+        create_connection(addr, params.clone(), socket_addr, push_sender.clone(), backend_state.clone()),
     )
     .await
     {
@@ -211,11 +220,12 @@ async fn connect_and_check_only_management_conn<C>(
     params: ClusterParams,
     socket_addr: Option<SocketAddr>,
     prev_node: AsyncClusterNode<C>,
+    push_sender: Option<mpsc::UnboundedSender<PushInfo>>,
 ) -> ConnectAndCheckResult<C>
 where
     C: ConnectionLike + Connect + Send + Sync + 'static + Clone,
 {
-    let (mut new_conn, new_ip) = match create_connection(addr, params.clone(), socket_addr).await {
+    let (mut new_conn, new_ip) = match create_connection(addr, params.clone(), socket_addr, push_sender.clone(), BackendState::default()).await {
         Ok(tuple) => tuple,
         Err(err) => {
             return failed_management_connection(
@@ -235,7 +245,7 @@ where
             return ConnectAndCheckResult::Failed(err);
         }
         let user_connection = to_future(new_conn);
-        let management_connection = create_connection(addr, params.clone(), socket_addr)
+        let management_connection = create_connection(addr, params.clone(), socket_addr, push_sender.clone(), BackendState::default())
             .await
             .map(|(conn, _ip)| conn)
             .ok();
@@ -317,6 +327,8 @@ pub async fn connect_and_check<C>(
     socket_addr: Option<SocketAddr>,
     conn_type: RefreshConnectionType,
     node: Option<AsyncClusterNode<C>>,
+    push_sender: Option<mpsc::UnboundedSender<PushInfo>>,
+    backend_state: BackendState,
 ) -> ConnectAndCheckResult<C>
 where
     C: ConnectionLike + Connect + Send + Sync + 'static + Clone,
@@ -324,7 +336,7 @@ where
     match conn_type {
         RefreshConnectionType::OnlyUserConnection => {
             let (user_conn, ip) =
-                match create_and_setup_user_connection(addr, params.clone(), socket_addr).await {
+                match create_and_setup_user_connection(addr, params.clone(), socket_addr, push_sender.clone(), backend_state).await {
                     Ok(tuple) => tuple,
                     Err(err) => return err.into(),
                 };
@@ -336,7 +348,7 @@ where
                 if ip != node.ip {
                     // New IP was found, refresh the management connection too
                     management_conn =
-                        create_and_setup_management_connection(addr, params, socket_addr)
+                        create_and_setup_management_connection(addr, params, socket_addr, push_sender.clone())
                             .await
                             .ok()
                             .map(|(conn, _ip): (C, Option<IpAddr>)| conn);
@@ -350,13 +362,13 @@ where
             // Refreshing only the management connection requires the node to exist alongside a user connection. Otherwise, refresh all connections.
             match node {
                 Some(node) => {
-                    connect_and_check_only_management_conn(addr, params, socket_addr, node).await
+                    connect_and_check_only_management_conn(addr, params, socket_addr, node, push_sender.clone()).await
                 }
-                None => connect_and_check_all_connections(addr, params, socket_addr).await,
+                None => connect_and_check_all_connections(addr, params, socket_addr, push_sender.clone(), backend_state.clone()).await,
             }
         }
         RefreshConnectionType::AllConnections => {
-            connect_and_check_all_connections(addr, params, socket_addr).await
+            connect_and_check_all_connections(addr, params, socket_addr, push_sender.clone(), backend_state.clone()).await
         }
     }
 }
@@ -365,12 +377,14 @@ async fn create_and_setup_user_connection<C>(
     node: &str,
     params: ClusterParams,
     socket_addr: Option<SocketAddr>,
+    push_sender: Option<mpsc::UnboundedSender<PushInfo>>,
+    backend_state: BackendState,
 ) -> RedisResult<(C, Option<IpAddr>)>
 where
     C: ConnectionLike + Connect + Send + 'static,
 {
     let (mut conn, ip): (C, Option<IpAddr>) =
-        create_connection(node, params.clone(), socket_addr).await?;
+        create_connection(node, params.clone(), socket_addr, push_sender, backend_state).await?;
     setup_user_connection(&mut conn, params).await?;
     Ok((conn, ip))
 }
@@ -379,12 +393,13 @@ async fn create_and_setup_management_connection<C>(
     node: &str,
     params: ClusterParams,
     socket_addr: Option<SocketAddr>,
+    push_sender: Option<mpsc::UnboundedSender<PushInfo>>,
 ) -> RedisResult<(C, Option<IpAddr>)>
 where
     C: ConnectionLike + Connect + Send + 'static,
 {
     let (mut conn, ip): (C, Option<IpAddr>) =
-        create_connection(node, params.clone(), socket_addr).await?;
+        create_connection(node, params.clone(), socket_addr, push_sender, BackendState::default()).await?;
     setup_management_connection(&mut conn).await?;
     Ok((conn, ip))
 }
@@ -422,14 +437,16 @@ async fn create_connection<C>(
     node: &str,
     params: ClusterParams,
     socket_addr: Option<SocketAddr>,
+    push_sender: Option<mpsc::UnboundedSender<PushInfo>>,
+    backend_state: BackendState,
 ) -> RedisResult<(C, Option<IpAddr>)>
 where
     C: ConnectionLike + Connect + Send + 'static,
 {
     let connection_timeout = params.connection_timeout;
     let response_timeout = params.response_timeout;
-    let info = get_connection_info(node, params)?;
-    C::connect(info, response_timeout, connection_timeout, socket_addr).await
+    let info = get_connection_info(node, params, backend_state)?;
+    C::connect(info, response_timeout, connection_timeout, socket_addr, push_sender).await
 }
 
 /// The function returns None if the checked connection/s are healthy. Otherwise, it returns the type of the unhealthy connection/s.

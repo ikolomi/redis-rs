@@ -1,11 +1,14 @@
 //! Adds async IO support to redis.
 use crate::cmd::{cmd, Cmd};
-use crate::connection::{get_resp3_hello_command_error, RedisConnectionInfo};
-use crate::types::{ErrorKind, RedisFuture, RedisResult, Value};
+use crate::connection::{get_resp3_hello_command_error, RedisConnectionInfo, PubSubSubscriptionKind};
+use crate::types::{ErrorKind, RedisFuture, RedisResult, Value, ToRedisArgs};
 use crate::ProtocolVersion;
+use crate::pack_command;
+use futures_time::channel;
 use ::tokio::io::{AsyncRead, AsyncWrite};
 use async_trait::async_trait;
 use futures_util::Future;
+use std::borrow::Borrow;
 use std::net::SocketAddr;
 #[cfg(unix)]
 use std::path::Path;
@@ -85,11 +88,24 @@ pub trait ConnectionLike {
     fn get_db(&self) -> i64;
 }
 
+pub trait InitialConnectionStateUpdater {
+    fn add_subscriptions(channels: Vec<String>);
+    fn remove_subscriptions(channels: Vec<String>);
+
+    fn add_psubscriptions(channels: Vec<String>);
+    fn remove_psubscriptions(channels: Vec<String>);
+
+    fn add_ssubscriptions(channels: Vec<String>);
+    fn remove_ssubscriptions(channels: Vec<String>);
+}
+
 // Initial setup for every connection.
 async fn setup_connection<C>(connection_info: &RedisConnectionInfo, con: &mut C) -> RedisResult<()>
 where
     C: ConnectionLike,
 {
+    // TODO: Pipeline commands in order to descrease latencies
+
     if connection_info.protocol != ProtocolVersion::RESP2 {
         let hello_cmd = resp3_hello(connection_info);
         let val: RedisResult<Value> = hello_cmd.query_async(con).await;
@@ -167,6 +183,36 @@ where
     let _: RedisResult<()> = crate::connection::client_set_info_pipeline()
         .query_async(con)
         .await;
+
+    // resubscribe
+    let pubsub_state = &connection_info.backend_state.pubsub_subscriptions.subscriptions_for_kind;
+    // TODO: pubsub_kind should be static
+    let pubsub_kind: [(PubSubSubscriptionKind, String); 3] = [
+        (PubSubSubscriptionKind::Exact, "SUBSCRIBE".to_string()),
+        (PubSubSubscriptionKind::Pattern, "PSUBSCRIBE".to_string()),
+        (PubSubSubscriptionKind::Sharded, "SSUBSCRIBE".to_string()),
+    ];
+    for pubsub_kind in pubsub_kind.iter() {
+        //let mut e = &pubsub_state.entry(pubsub_kind.0);
+        if pubsub_state.contains_key(&pubsub_kind.0) {
+            let mut subscribe_command = cmd(pubsub_kind.1.as_str());
+            for channel in &pubsub_state[&pubsub_kind.0] {
+                subscribe_command.arg(channel);
+            }
+
+            println!("Running: '{:?}'", subscribe_command.get_packed_command());
+
+            match subscribe_command.query_async(con).await
+            {
+                Ok(Value::Okay) => {}
+                _ => fail!((
+                    ErrorKind::ResponseError,
+                    // TODO: Find a way to print the exact command
+                    "Failed to restore subscription channels"
+                )),
+            }
+        }
+    }
 
     Ok(())
 }

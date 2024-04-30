@@ -51,7 +51,7 @@ use crate::cluster_slotmap::SlotMap;
 use crate::cluster_topology::{parse_and_count_slots, SLOT_SIZE};
 use crate::cmd::{cmd, Cmd};
 use crate::connection::{
-    connect, Connection, ConnectionAddr, ConnectionInfo, ConnectionLike, RedisConnectionInfo,
+    connect, Connection, ConnectionAddr, ConnectionInfo, ConnectionLike, RedisConnectionInfo, BackendState,
 };
 use crate::parser::parse_redis_value;
 use crate::types::{ErrorKind, HashMap, RedisError, RedisResult, Value};
@@ -60,10 +60,13 @@ use crate::{
     cluster_client::ClusterParams,
     cluster_routing::{Redirect, Route, RoutingInfo},
     IntoConnectionInfo,
+    PushInfo,
 };
 
 pub use crate::cluster_client::{ClusterClient, ClusterClientBuilder};
 pub use crate::cluster_pipeline::{cluster_pipe, ClusterPipeline};
+
+use tokio::sync::mpsc;
 
 #[cfg(feature = "tls-rustls")]
 use crate::tls::TlsConnParams;
@@ -224,6 +227,7 @@ where
     pub(crate) fn new(
         cluster_params: ClusterParams,
         initial_nodes: Vec<ConnectionInfo>,
+        push_sender: Option<mpsc::UnboundedSender<PushInfo>>,
     ) -> RedisResult<Self> {
         let connection = Self {
             connections: RefCell::new(HashMap::new()),
@@ -398,7 +402,8 @@ where
     }
 
     fn connect(&self, node: &str) -> RedisResult<C> {
-        let info = get_connection_info(node, self.cluster_params.clone())?;
+        // TODO: Implement backend state update
+        let info = get_connection_info(node, self.cluster_params.clone(), BackendState::default())?;
 
         let mut conn = C::connect(info, Some(self.cluster_params.connection_timeout))?;
         if self.cluster_params.read_from_replicas
@@ -952,6 +957,7 @@ fn get_random_connection<C: ConnectionLike + Connect + Sized>(
 pub(crate) fn get_connection_info(
     node: &str,
     cluster_params: ClusterParams,
+    backend_state: BackendState,
 ) -> RedisResult<ConnectionInfo> {
     let invalid_error = || (ErrorKind::InvalidClientConfig, "Invalid node string");
 
@@ -977,6 +983,7 @@ pub(crate) fn get_connection_info(
             client_name: cluster_params.client_name,
             protocol: cluster_params.protocol,
             db: 0,
+            backend_state: backend_state,
         },
     })
 }
@@ -1036,13 +1043,13 @@ mod tests {
         ];
 
         for (input, expected) in cases {
-            let res = get_connection_info(input, ClusterParams::default());
+            let res = get_connection_info(input, ClusterParams::default(), BackendState::default());
             assert_eq!(res.unwrap().addr, expected);
         }
 
         let cases = vec![":0", "[]:6379"];
         for input in cases {
-            let res = get_connection_info(input, ClusterParams::default());
+            let res = get_connection_info(input, ClusterParams::default(), BackendState::default());
             assert_eq!(
                 res.err(),
                 Some(RedisError::from((

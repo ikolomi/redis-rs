@@ -24,7 +24,7 @@ pub fn use_protocol() -> ProtocolVersion {
     if env::var("PROTOCOL").unwrap_or_default() == "RESP3" {
         ProtocolVersion::RESP3
     } else {
-        ProtocolVersion::RESP2
+        ProtocolVersion::RESP3
     }
 }
 
@@ -416,7 +416,7 @@ impl TestContext {
         let millisecond = Duration::from_millis(1);
         let mut retries = 0;
         loop {
-            match client.get_connection() {
+            match client.get_connection(None) {
                 Err(err) => {
                     if err.is_connection_refusal() {
                         sleep(millisecond);
@@ -511,13 +511,13 @@ impl TestContext {
     }
 
     pub fn connection(&self) -> redis::Connection {
-        self.client.get_connection().unwrap()
+        self.client.get_connection(None).unwrap()
     }
 
     #[cfg(feature = "aio")]
     #[allow(deprecated)]
     pub async fn async_connection(&self) -> redis::RedisResult<redis::aio::Connection> {
-        self.client.get_async_connection().await
+        self.client.get_async_connection(None).await
     }
 
     #[cfg(feature = "async-std-comp")]
@@ -542,14 +542,14 @@ impl TestContext {
         &self,
     ) -> impl Future<Output = redis::RedisResult<redis::aio::MultiplexedConnection>> {
         let client = self.client.clone();
-        async move { client.get_multiplexed_tokio_connection().await }
+        async move { client.get_multiplexed_tokio_connection(None).await }
     }
     #[cfg(feature = "async-std-comp")]
     pub fn multiplexed_async_connection_async_std(
         &self,
     ) -> impl Future<Output = redis::RedisResult<redis::aio::MultiplexedConnection>> {
         let client = self.client.clone();
-        async move { client.get_multiplexed_async_std_connection().await }
+        async move { client.get_multiplexed_async_std_connection(None).await }
     }
 
     pub fn get_version(&self) -> Version {

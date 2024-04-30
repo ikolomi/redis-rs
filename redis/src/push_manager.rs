@@ -32,6 +32,9 @@ impl PushManager {
         if let Value::Push { kind, data } = value {
             let guard = self.sender.load();
             if let Some(sender) = guard.as_ref() {
+
+                println!("PushManager::try_send_raw(): sending kind: {:?}, data: {:?}", kind, data);
+
                 let push_info = PushInfo {
                     kind: kind.clone(),
                     data: data.clone(),
